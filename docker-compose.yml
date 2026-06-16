@@ -1,0 +1,18 @@
+services:
+  hyperspectral:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hyperspectral-classifier
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+      - ./batch_outputs:/app/batch_outputs
+    environment:
+      - TZ=Asia/Shanghai
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 8G

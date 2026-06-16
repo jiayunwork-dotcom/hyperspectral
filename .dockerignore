@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.git/
+.gitignore
+data/
+batch_outputs/
+*.npy
+*.hdr
+*.png
+*.tif
+*.tiff
+.env
+.venv/
+venv/

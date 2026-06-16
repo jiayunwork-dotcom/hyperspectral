@@ -206,18 +206,18 @@ def save_envi_data(data: np.ndarray, hdr_path: str, dat_path: Optional[str] = No
 
     hdr_content = [
         'ENVI',
-        f'lignes = {n_lines}',
-        f'echantillons = {n_samples}',
-        f'bandes = {n_bands}',
-        f'type de donnees = {envi_dtype}',
-        f'entrelacement = {interleave.lower()}',
-        f'ordre des octets = 0',
-        f'decalage d\'entete = {header_offset}',
+        f'lines = {n_lines}',
+        f'samples = {n_samples}',
+        f'bands = {n_bands}',
+        f'data type = {envi_dtype}',
+        f'interleave = {interleave.lower()}',
+        f'byte order = 0',
+        f'header offset = {header_offset}',
     ]
 
     if wavelengths and len(wavelengths) == n_bands:
         wl_str = ', '.join([f'{w:.2f}' for w in wavelengths])
-        hdr_content.append(f'longueurs d\'onde = {{ {wl_str} }}')
+        hdr_content.append(f'wavelength = {{ {wl_str} }}')
 
     hdr_content.append('')
 

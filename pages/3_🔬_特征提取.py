@@ -7,7 +7,6 @@ from src.feature_extraction import extract_features
 from src.utils import normalize_image
 
 
-st.set_page_config(page_title="特征提取", page_icon="🔬", layout="wide")
 init_session_state()
 render_sidebar_info()
 

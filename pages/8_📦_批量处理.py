@@ -5,7 +5,6 @@ from state import init_session_state, save_uploaded_file, create_progress_callba
 from src.batch_processing import create_batch_jobs, batch_process
 
 
-st.set_page_config(page_title="批量处理", page_icon="📦", layout="wide")
 init_session_state()
 render_sidebar_info()
 

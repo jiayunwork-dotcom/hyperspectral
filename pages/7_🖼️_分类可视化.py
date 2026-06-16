@@ -16,7 +16,6 @@ from src.visualization import (
 )
 
 
-st.set_page_config(page_title="分类可视化", page_icon="🖼️", layout="wide")
 init_session_state()
 render_sidebar_info()
 

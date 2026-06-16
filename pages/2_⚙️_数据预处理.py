@@ -9,7 +9,6 @@ from src.visualization import plot_mnf_variance, plot_pca_variance
 from src.utils import normalize_image
 
 
-st.set_page_config(page_title="数据预处理", page_icon="⚙️", layout="wide")
 init_session_state()
 render_sidebar_info()
 

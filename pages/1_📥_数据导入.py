@@ -15,7 +15,6 @@ from src.visualization import get_true_color, get_false_color, compute_ndvi, col
 from src.utils import normalize_image
 
 
-st.set_page_config(page_title="数据导入", page_icon="📥", layout="wide")
 init_session_state()
 render_sidebar_info()
 

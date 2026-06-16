@@ -8,7 +8,6 @@ from src.classification import create_classifier, classify_image
 from src.utils import reshape_for_classifier
 
 
-st.set_page_config(page_title="模型训练", page_icon="🤖", layout="wide")
 init_session_state()
 render_sidebar_info()
 

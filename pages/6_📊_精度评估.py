@@ -8,7 +8,6 @@ from state import init_session_state, create_progress_callback, render_sidebar_i
 from src.evaluation import compute_metrics, compute_confusion_matrix, evaluate_classifier, format_metrics_for_display
 
 
-st.set_page_config(page_title="精度评估", page_icon="📊", layout="wide")
 init_session_state()
 render_sidebar_info()
 

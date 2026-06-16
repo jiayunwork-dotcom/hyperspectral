@@ -11,7 +11,6 @@ from src.sample_management import (
 from src.visualization import get_true_color, plot_class_distribution
 
 
-st.set_page_config(page_title="样本管理", page_icon="📝", layout="wide")
 init_session_state()
 render_sidebar_info()
 

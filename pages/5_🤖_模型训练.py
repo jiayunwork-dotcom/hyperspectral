@@ -173,7 +173,11 @@ st.markdown("---")
 st.subheader("🧪 超参数对比实验")
 st.info("💡 配置多组超参数，系统将自动遍历所有组合并对比结果")
 
-exp_classifier = st.selectbox("选择实验分类器", ["SVM (RBF核)", "随机森林"], key="exp_classifier")
+exp_classifier = st.selectbox(
+    "选择实验分类器",
+    ["SVM (RBF核)", "随机森林", "1D-CNN", "3D-CNN"],
+    key="exp_classifier"
+)
 exp_val_ratio = st.slider("验证集比例（从训练集中划分）", 0.1, 0.4, 0.2, 0.05)
 
 if exp_classifier == "SVM (RBF核)":
@@ -227,9 +231,100 @@ elif exp_classifier == "随机森林":
         exp_param_grid = {'n_estimators': n_est_list, 'max_depth': max_depth_list, 'max_features': rf_feat}
         exp_classifier_key = 'random_forest'
 
+elif exp_classifier == "1D-CNN":
+    st.markdown("##### 1D-CNN超参数网格")
+    st.warning("⚠️ CNN训练时间较长，建议减少组合数量或使用较少的epoch")
+    col_cnn1, col_cnn2, col_cnn3 = st.columns(3)
+    with col_cnn1:
+        cnn_epochs_list = st.multiselect(
+            "n_epochs (训练轮数)",
+            [10, 20, 30, 50, 80, 100],
+            default=[10, 20, 30],
+            key="cnn_epochs"
+        )
+    with col_cnn2:
+        cnn_lr_mode = st.radio("学习率采样方式", ["对数", "固定值"], key="cnn_lr_mode")
+        if cnn_lr_mode == "对数":
+            cnn_lr_start = st.number_input("学习率起始", 0.0001, 0.1, 0.0005, key="cnn_lr_start", format="%.4f")
+            cnn_lr_end = st.number_input("学习率结束", 0.0001, 0.1, 0.01, key="cnn_lr_end", format="%.4f")
+            cnn_lr_n = st.slider("学习率采样数", 2, 6, 3, key="cnn_lr_n")
+            lr_list = generate_param_grid_log(cnn_lr_start, cnn_lr_end, cnn_lr_n)
+        else:
+            lr_manual = st.multiselect(
+                "学习率值",
+                [0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05],
+                default=[0.0005, 0.001, 0.005],
+                key="cnn_lr_manual"
+            )
+            lr_list = lr_manual
+    with col_cnn3:
+        cnn_batch_list = st.multiselect(
+            "batch_size (批次大小)",
+            [64, 128, 256, 512],
+            default=[128, 256],
+            key="cnn_batch"
+        )
+        total_combos = len(cnn_epochs_list) * len(lr_list) * len(cnn_batch_list)
+        st.metric("总组合数", total_combos)
+        exp_param_grid = {
+            'n_epochs': cnn_epochs_list,
+            'learning_rate': lr_list,
+            'batch_size': cnn_batch_list
+        }
+        exp_classifier_key = '1d_cnn'
+
+elif exp_classifier == "3D-CNN":
+    st.markdown("##### 3D-CNN超参数网格")
+    st.warning("⚠️ 3D-CNN训练时间较长，建议减少组合数量或使用较少的epoch")
+    col_3d1, col_3d2, col_3d3 = st.columns(3)
+    with col_3d1:
+        cnn3d_epochs_list = st.multiselect(
+            "n_epochs (训练轮数)",
+            [5, 10, 15, 20, 30],
+            default=[5, 10, 15],
+            key="3dcnn_epochs"
+        )
+        cnn3d_ws_list = st.multiselect(
+            "window_size (窗口大小)",
+            [3, 5, 7, 9],
+            default=[5, 7],
+            key="3dcnn_ws"
+        )
+    with col_3d2:
+        cnn3d_lr_mode = st.radio("学习率采样方式", ["对数", "固定值"], key="3dcnn_lr_mode")
+        if cnn3d_lr_mode == "对数":
+            cnn3d_lr_start = st.number_input("学习率起始", 0.0001, 0.01, 0.0005, key="3dcnn_lr_start", format="%.4f")
+            cnn3d_lr_end = st.number_input("学习率结束", 0.0001, 0.01, 0.005, key="3dcnn_lr_end", format="%.4f")
+            cnn3d_lr_n = st.slider("学习率采样数", 2, 5, 3, key="3dcnn_lr_n")
+            lr3d_list = generate_param_grid_log(cnn3d_lr_start, cnn3d_lr_end, cnn3d_lr_n)
+        else:
+            lr3d_manual = st.multiselect(
+                "学习率值",
+                [0.0001, 0.0005, 0.001, 0.003, 0.005],
+                default=[0.0005, 0.001],
+                key="3dcnn_lr_manual"
+            )
+            lr3d_list = lr3d_manual
+    with col_3d3:
+        cnn3d_batch_list = st.multiselect(
+            "batch_size (批次大小)",
+            [32, 64, 128],
+            default=[64, 128],
+            key="3dcnn_batch"
+        )
+        total_combos = len(cnn3d_epochs_list) * len(lr3d_list) * len(cnn3d_batch_list) * len(cnn3d_ws_list)
+        st.metric("总组合数", total_combos)
+        exp_param_grid = {
+            'n_epochs': cnn3d_epochs_list,
+            'learning_rate': lr3d_list,
+            'batch_size': cnn3d_batch_list,
+            'window_size': cnn3d_ws_list
+        }
+        exp_classifier_key = '3d_cnn'
+
 if st.button("⚡ 开始超参数实验", type='primary'):
-    if total_combos > 100:
-        st.warning(f"⚠️ 组合数较多({total_combos})，可能需要较长时间")
+    if total_combos > 30 and exp_classifier in ["1D-CNN", "3D-CNN"]:
+        st.warning(f"⚠️ CNN组合数较多({total_combos})，训练时间可能很长，建议减少组合数")
 
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -244,13 +339,20 @@ if st.button("⚡ 开始超参数实验", type='primary'):
             X_train, y_train, test_size=exp_val_ratio, stratify=True, random_state=42
         )
 
+        extra_kwargs = {}
+        if exp_classifier_key == '3d_cnn':
+            extra_kwargs['data_image'] = st.session_state.data
+            if 'window_size' in exp_param_grid:
+                extra_kwargs['window_size'] = min(exp_param_grid['window_size'])
+
         with st.spinner("正在运行超参数对比实验..."):
             results = run_hyperparameter_experiment(
                 exp_classifier_key,
                 X_tr, y_tr, X_val, y_val,
                 exp_param_grid,
                 progress_callback=callback,
-                class_names=st.session_state.samples.class_names
+                class_names=st.session_state.samples.class_names,
+                **extra_kwargs
             )
 
         st.session_state.hyperparam_results = results
@@ -259,6 +361,11 @@ if st.button("⚡ 开始超参数实验", type='primary'):
         progress_bar.progress(1.0)
         status_text.text("✅ 超参数实验完成！")
         st.success(f"✅ 实验完成！共测试 {len(results)} 组参数")
+
+        has_errors = any('error' in r for r in results)
+        if has_errors:
+            error_count = sum(1 for r in results if 'error' in r)
+            st.warning(f"⚠️ 有 {error_count} 组参数训练失败，可展开结果表格查看详情")
 
     except Exception as e:
         st.error(f"❌ 实验失败: {str(e)}")
@@ -368,6 +475,11 @@ if st.session_state.hyperparam_results is not None:
                             'grid_search': False,
                             'cv': 3
                         }
+                        classifier = create_classifier(exp_classifier_key, **train_params)
+                        train_X = st.session_state.train_samples.features
+                        train_y = st.session_state.train_samples.labels
+                        train_info = classifier.fit(train_X, train_y, progress_callback=callback)
+
                     elif exp_classifier_key == 'random_forest':
                         max_feat = selected_params['max_features']
                         train_params = {
@@ -375,20 +487,59 @@ if st.session_state.hyperparam_results is not None:
                             'max_depth': int(selected_params['max_depth']),
                             'max_features': max_feat if isinstance(max_feat, str) else float(max_feat)
                         }
+                        classifier = create_classifier(exp_classifier_key, **train_params)
+                        train_X = st.session_state.train_samples.features
+                        train_y = st.session_state.train_samples.labels
+                        train_info = classifier.fit(train_X, train_y, progress_callback=callback)
 
-                    classifier = create_classifier(exp_classifier_key, **train_params)
-                    train_X = st.session_state.train_samples.features
-                    train_y = st.session_state.train_samples.labels
+                    elif exp_classifier_key == '1d_cnn':
+                        train_params = {
+                            'n_epochs': int(selected_params['n_epochs']),
+                            'batch_size': int(selected_params['batch_size']),
+                            'learning_rate': float(selected_params['learning_rate'])
+                        }
+                        classifier = create_classifier(exp_classifier_key, **train_params)
+                        train_X = st.session_state.train_samples.features
+                        train_y = st.session_state.train_samples.labels
+                        train_info = classifier.fit(train_X, train_y, progress_callback=callback)
 
-                    train_info = classifier.fit(train_X, train_y, progress_callback=callback)
+                    elif exp_classifier_key == '3d_cnn':
+                        train_params = {
+                            'n_epochs': int(selected_params['n_epochs']),
+                            'batch_size': int(selected_params['batch_size']),
+                            'learning_rate': float(selected_params['learning_rate']),
+                            'window_size': int(selected_params['window_size'])
+                        }
+                        classifier = create_classifier(exp_classifier_key, **train_params)
+                        train_X = st.session_state.train_samples.features
+                        train_y = st.session_state.train_samples.labels
+                        train_locs = st.session_state.train_samples.locations
+                        train_info = classifier.fit(
+                            train_X, train_y,
+                            data_image=st.session_state.data,
+                            train_locations=train_locs,
+                            progress_callback=callback
+                        )
+
+                    else:
+                        raise ValueError(f"不支持的分类器: {exp_classifier_key}")
+
                     st.session_state.classifier = classifier
                     st.session_state.train_info = train_info
 
                     from src.visualization import classification_to_rgb
-                    predictions, _ = classify_image(
-                        st.session_state.classifier, st.session_state.features,
-                        progress_callback=lambda p, m: callback(0.5 + 0.5 * p, m)
-                    )
+
+                    if exp_classifier_key == '3d_cnn':
+                        predictions, _ = classify_image(
+                            st.session_state.classifier, st.session_state.features,
+                            data_image=st.session_state.data,
+                            progress_callback=lambda p, m: callback(0.5 + 0.5 * p, m)
+                        )
+                    else:
+                        predictions, _ = classify_image(
+                            st.session_state.classifier, st.session_state.features,
+                            progress_callback=lambda p, m: callback(0.5 + 0.5 * p, m)
+                        )
 
                     st.session_state.classification_result = predictions
                     class_rgb, legend = classification_to_rgb(

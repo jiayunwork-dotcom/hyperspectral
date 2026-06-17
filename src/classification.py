@@ -673,7 +673,9 @@ def run_hyperparameter_experiment(classifier_key: str,
                                   X_val: np.ndarray, y_val: np.ndarray,
                                   param_grid: Dict[str, List],
                                   progress_callback=None,
-                                  class_names: Dict[int, str] = None) -> List[Dict]:
+                                  class_names: Dict[int, str] = None,
+                                  data_image: np.ndarray = None,
+                                  window_size: int = 5) -> List[Dict]:
     from itertools import product
     from sklearn.metrics import accuracy_score, cohen_kappa_score
     from sklearn.preprocessing import StandardScaler
@@ -711,6 +713,55 @@ def run_hyperparameter_experiment(classifier_key: str,
                 )
                 model.fit(X_train, y_train)
                 y_pred = model.predict(X_val)
+
+            elif classifier_key == '1d_cnn':
+                n_epochs = int(params.get('n_epochs', 30))
+                batch_size = int(params.get('batch_size', 256))
+                learning_rate = float(params.get('learning_rate', 0.001))
+
+                classifier = OneDCNNClassifier(
+                    n_epochs=n_epochs,
+                    batch_size=batch_size,
+                    learning_rate=learning_rate
+                )
+                classifier.fit(X_train, y_train)
+                y_pred = classifier.predict(X_val)
+
+            elif classifier_key == '3d_cnn':
+                n_epochs = int(params.get('n_epochs', 30))
+                batch_size = int(params.get('batch_size', 128))
+                learning_rate = float(params.get('learning_rate', 0.001))
+                ws = int(params.get('window_size', window_size))
+
+                if data_image is None:
+                    raise ValueError("3D CNN需要影像数据")
+
+                classifier = ThreeDCNNClassifier(
+                    n_epochs=n_epochs,
+                    batch_size=batch_size,
+                    learning_rate=learning_rate,
+                    window_size=ws
+                )
+
+                n_train = len(X_train)
+                n_val = len(X_val)
+                H, W, B = data_image.shape
+
+                rng = np.random.RandomState(42 + idx)
+                train_rows = rng.randint(ws, H - ws, n_train)
+                train_cols = rng.randint(ws, W - ws, n_train)
+                val_rows = rng.randint(ws, H - ws, n_val)
+                val_cols = rng.randint(ws, W - ws, n_val)
+
+                train_locations = np.column_stack([train_rows, train_cols])
+                val_locations = np.column_stack([val_rows, val_cols])
+
+                classifier.fit(X_train, y_train,
+                             data_image=data_image,
+                             train_locations=train_locations)
+                y_pred = classifier.predict(X_val,
+                                          data_image=data_image,
+                                          val_locations=val_locations)
 
             else:
                 continue

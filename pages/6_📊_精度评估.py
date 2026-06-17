@@ -93,7 +93,7 @@ if st.session_state.metrics is not None:
 
     st.markdown("---")
     st.subheader("🔴 错误空间分布分析")
-    st.info("💡 红色区域表示分类错误的像素，叠加在原始影像上展示")
+    st.info("💡 红色区域表示分类错误的像素，鼠标悬停可查看该像素的真实类别和预测类别")
 
     if st.session_state.samples is not None and st.session_state.classification_result is not None:
         col_err1, col_err2 = st.columns([1, 1])
@@ -102,6 +102,7 @@ if st.session_state.metrics is not None:
             bg_type = st.selectbox("背景影像", ["真彩色", "标准假彩色"], key="error_bg")
         with col_err2:
             show_only_errors = st.checkbox("仅显示错误区域", False, key="show_only_errors")
+            show_sample_mode = st.selectbox("显示方式", ["全部标注点", "仅错误点"], key="show_sample_mode")
             error_pixel_count = 0
 
         try:
@@ -112,25 +113,38 @@ if st.session_state.metrics is not None:
             pred_at_samples = np.zeros((H, W), dtype=np.int32)
             valid_mask = np.zeros((H, W), dtype=bool)
 
-            if hasattr(samples, 'locations') and samples.locations is not None:
+            if hasattr(samples, 'locations') and samples.locations is not None and samples.locations is not None:
+                valid_rows = []
+                valid_cols = []
+                valid_labels = []
                 for i, (r, c) in enumerate(samples.locations):
-                    if 0 <= r < H and 0 <= c < W:
-                        label_map[r, c] = samples.labels[i]
-                        pred_at_samples[r, c] = class_pred[r, c]
-                        valid_mask[r, c] = True
+                    r_int = int(r) if not isinstance(r, int) else r
+                    c_int = int(c) if not isinstance(c, int) else c
+                    if 0 <= r_int < H and 0 <= c_int < W:
+                        valid_rows.append(r_int)
+                        valid_cols.append(c_int)
+                        valid_labels.append(samples.labels[i])
+                        label_map[r_int, c_int] = samples.labels[i]
+                        pred_at_samples[r_int, c_int] = class_pred[r_int, c_int]
+                        valid_mask[r_int, c_int] = True
             else:
                 all_labels = np.concatenate([
                     st.session_state.train_samples.labels,
                     st.session_state.test_samples.labels
                 ])
-                from src.classification import train_test_split as split_fn
                 rng = np.random.RandomState(42)
                 n_all = len(all_labels)
                 rows = rng.randint(0, H, n_all)
                 cols = rng.randint(0, W, n_all)
+                valid_rows = []
+                valid_cols = []
+                valid_labels = []
                 for i in range(n_all):
-                    r, c = rows[i], cols[i]
+                    r, c = int(rows[i]), int(cols[i])
                     if 0 <= r < H and 0 <= c < W:
+                        valid_rows.append(r)
+                        valid_cols.append(c)
+                        valid_labels.append(all_labels[i])
                         label_map[r, c] = all_labels[i]
                         pred_at_samples[r, c] = class_pred[r, c]
                         valid_mask[r, c] = True
@@ -142,15 +156,8 @@ if st.session_state.metrics is not None:
                 from src.visualization import get_false_color
                 background = get_false_color(st.session_state.data, wavelengths)
 
-            error_display, error_mask = create_error_spatial_map(
-                label_map, pred_at_samples,
-                background=background, alpha=error_alpha
-            )
-
-            if show_only_errors:
-                only_errors = np.ones_like(error_display) * 0.9
-                only_errors[error_mask] = error_display[error_mask]
-                error_display = only_errors
+            error_mask = (label_map != pred_at_samples) & valid_mask
+            correct_mask = (label_map == pred_at_samples) & valid_mask
 
             error_pixel_count = int(np.sum(error_mask))
             valid_pixel_count = int(np.sum(valid_mask))
@@ -161,36 +168,97 @@ if st.session_state.metrics is not None:
             col_stat2.metric("分类错误像素", error_pixel_count)
             col_stat3.metric("错误率", f"{error_rate*100:.2f}%")
 
-            fig, ax = plt.subplots(figsize=(12, 10))
-            ax.imshow(error_display)
-            ax.set_title('分类错误空间分布（红色为错误区域）')
-            ax.axis('off')
-            st.pyplot(fig)
+            class_names = st.session_state.samples.class_names
+
+            error_rows, error_cols = np.where(error_mask)
+            correct_rows, correct_cols = np.where(correct_mask)
+
+            error_hover_texts = []
+            for i in range(len(error_rows)):
+                r, c = error_rows[i], error_cols[i]
+                true_cls = int(label_map[r, c])
+                pred_cls = int(pred_at_samples[r, c])
+                true_name = class_names.get(true_cls, f"Class {true_cls}")
+                pred_name = class_names.get(pred_cls, f"Class {pred_cls}")
+                error_hover_texts.append(
+                    f"位置: ({r}, {c})<br>真实类别: {true_name}<br>预测类别: {pred_name}<br>状态: ❌ 错误"
+                )
+
+            correct_hover_texts = []
+            for i in range(len(correct_rows)):
+                r, c = correct_rows[i], correct_cols[i]
+                true_cls = int(label_map[r, c])
+                true_name = class_names.get(true_cls, f"Class {true_cls}")
+                correct_hover_texts.append(
+                    f"位置: ({r}, {c})<br>类别: {true_name}<br>状态: ✅ 正确"
+                )
+
+            fig = go.Figure()
+
+            fig.add_trace(go.Image(
+                z=(background * 255).astype(np.uint8),
+                hoverinfo='none',
+                name='背景影像'
+            ))
+
+            if show_sample_mode in ["全部标注点"] and len(correct_rows) > 0:
+                max_correct_show = min(5000, len(correct_rows))
+                sample_idx = np.random.choice(len(correct_rows), max_correct_show, replace=False)
+                fig.add_trace(go.Scatter(
+                    x=correct_cols[sample_idx],
+                    y=correct_rows[sample_idx],
+                    mode='markers',
+                    marker=dict(size=4, color='limegreen', opacity=0.8, line=dict(width=0.5, color='white')),
+                    text=[correct_hover_texts[i] for i in sample_idx],
+                    hovertemplate='%{text}<extra></extra>',
+                    name='正确分类点'
+                ))
+
+            if len(error_rows) > 0:
+                fig.add_trace(go.Scatter(
+                    x=error_cols,
+                    y=error_rows,
+                    mode='markers',
+                    marker=dict(size=6, color='red', opacity=error_alpha, line=dict(width=1, color='darkred')),
+                    text=error_hover_texts,
+                    hovertemplate='%{text}<extra></extra>',
+                    name='错误分类点'
+                ))
+
+            fig.update_layout(
+                title='分类错误空间分布（鼠标悬停查看详情）',
+                xaxis_title='列 (像素)',
+                yaxis_title='行 (像素)',
+                yaxis=dict(autorange='reversed'),
+                height=600,
+                hovermode='closest',
+                legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
 
             if error_pixel_count > 0:
                 st.markdown("---")
-                st.markdown("**💡 交互式错误像素信息（点击图片区域查看）**")
-                st.caption("提示：从上图可见红色区域集中的位置为模型易分错的区域")
+                st.markdown("**📋 错误像素详情表**")
 
-                error_rows, error_cols = np.where(error_mask)
-                if len(error_rows) > 0:
-                    show_n = min(50, len(error_rows))
-                    sample_indices = np.random.choice(len(error_rows), show_n, replace=False)
-                    error_data = []
-                    for idx in sample_indices:
-                        r, c = error_rows[idx], error_cols[idx]
-                        true_cls = label_map[r, c]
-                        pred_cls = pred_at_samples[r, c]
-                        true_name = st.session_state.samples.class_names.get(true_cls, f"Class {true_cls}")
-                        pred_name = st.session_state.samples.class_names.get(pred_cls, f"Class {pred_cls}")
-                        error_data.append({
-                            '行': r,
-                            '列': c,
-                            '真实类别': true_name,
-                            '预测类别': pred_name
-                        })
-                    error_df = pd.DataFrame(error_data)
-                    st.dataframe(error_df, use_container_width=True, height=250)
+                error_data = []
+                show_n = min(50, len(error_rows))
+                sample_indices = np.random.choice(len(error_rows), show_n, replace=False)
+                for idx in sample_indices:
+                    r, c = error_rows[idx], error_cols[idx]
+                    true_cls = int(label_map[r, c])
+                    pred_cls = int(pred_at_samples[r, c])
+                    true_name = class_names.get(true_cls, f"Class {true_cls}")
+                    pred_name = class_names.get(pred_cls, f"Class {pred_cls}")
+                    error_data.append({
+                        '行': r,
+                        '列': c,
+                        '真实类别': true_name,
+                        '预测类别': pred_name
+                    })
+                error_df = pd.DataFrame(error_data)
+                st.dataframe(error_df, use_container_width=True, height=250)
+                st.caption(f"💡 共 {error_pixel_count} 个错误像素，上方随机展示 {show_n} 个")
 
         except Exception as e:
             st.warning(f"⚠️ 无法生成错误空间分布图: {str(e)}")

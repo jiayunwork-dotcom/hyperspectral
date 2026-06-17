@@ -15,6 +15,7 @@ from src.visualization import (
     overlay_classification, extract_single_class,
     generate_classification_legend, create_comparison_diff_map
 )
+from src.utils import normalize_image
 
 
 init_session_state()
@@ -234,7 +235,9 @@ if result1_name and result2_name and result1_name != result2_name:
             if diff_bg_type == "真彩色背景":
                 diff_bg = get_true_color(st.session_state.data, st.session_state.wavelengths)
             elif diff_bg_type == "原始影像灰度":
-                single_band = normalize_image(st.session_state.data[:, :, min(30, st.session_state.data.shape[2] - 1)])
+                max_band_idx = st.session_state.data.shape[2] - 1
+                band_idx = min(30, max_band_idx)
+                single_band = normalize_image(st.session_state.data[:, :, band_idx])
                 diff_bg = np.stack([single_band] * 3, axis=-1)
             else:
                 diff_bg = None
@@ -297,7 +300,8 @@ if result1_name and result2_name and result1_name != result2_name:
             class_compare_df = pd.DataFrame(class_compare_data)
             st.dataframe(class_compare_df, use_container_width=True, height=300)
 
-            if np.sum(disagree_mask) > 0:
+            sorted_pairs = []
+            if diff_stats['disagree_pixels'] > 0:
                 st.markdown("---")
                 st.subheader("🔎 差异模式分析")
 
@@ -316,13 +320,13 @@ if result1_name and result2_name and result1_name != result2_name:
                 top_diff_n = min(15, len(sorted_pairs))
 
                 pair_diff_data = []
-                for (c1, c2), cnt in sorted_pairs[:top_diff_n]:
+                for rank_idx, ((c1, c2), cnt) in enumerate(sorted_pairs[:top_diff_n]):
                     n1 = class_names.get(c1, f"Class {c1}")
                     n2 = class_names.get(c2, f"Class {c2}")
-                    total_diff = np.sum(disagree_mask)
+                    total_diff = diff_stats['disagree_pixels']
                     ratio = cnt / total_diff * 100 if total_diff > 0 else 0
                     pair_diff_data.append({
-                        '排名': sorted_pairs.index(((c1, c2), cnt)) + 1,
+                        '排名': rank_idx + 1,
                         f'{result1_name}分类为': n1,
                         f'{result2_name}分类为': n2,
                         '差异像素数': cnt,
@@ -384,13 +388,14 @@ if result1_name and result2_name and result1_name != result2_name:
                 )
 
             with col_dl3:
+                top_pairs_for_report = sorted_pairs[:min(50, len(sorted_pairs))] if sorted_pairs else []
                 compare_report = {
                     'result_A': result1_name,
                     'result_B': result2_name,
                     'stats': diff_stats,
                     'per_class_difference': [
                         {
-                            'class': c,
+                            'class': int(c),
                             'class_name': class_names.get(c, f'Class {c}'),
                             'count_A': int(np.sum(r1_data == c)),
                             'count_B': int(np.sum(r2_data == c))
@@ -405,7 +410,7 @@ if result1_name and result2_name and result1_name != result2_name:
                             'class_B_name': class_names.get(p[1], f'Class {p[1]}'),
                             'count': int(c)
                         }
-                        for (p, c) in sorted_pairs[:min(50, len(sorted_pairs))]
+                        for (p, c) in top_pairs_for_report
                     ]
                 }
                 report_json = json.dumps(compare_report, ensure_ascii=False, indent=2)

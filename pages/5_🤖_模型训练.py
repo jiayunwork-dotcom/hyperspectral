@@ -1,10 +1,15 @@
 import streamlit as st
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
+from itertools import product
 
-from state import init_session_state, create_progress_callback, render_sidebar_info
-from src.classification import create_classifier, classify_image
+from state import init_session_state, create_progress_callback, render_sidebar_info, save_classification_result
+from src.classification import (
+    create_classifier, classify_image, run_hyperparameter_experiment,
+    generate_param_grid_linear, generate_param_grid_log
+)
 from src.utils import reshape_for_classifier
 
 
@@ -126,23 +131,285 @@ if st.button("🚀 开始训练", type='primary'):
 
 if st.session_state.classifier is not None and st.session_state.features is not None:
     st.markdown("---")
-    if st.button("🔍 执行全图分类", type='primary'):
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        callback = create_progress_callback(progress_bar, status_text)
+    col_classify1, col_classify2 = st.columns([1, 1])
+    with col_classify1:
+        if st.button("🔍 执行全图分类", type='primary'):
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            callback = create_progress_callback(progress_bar, status_text)
 
-        try:
-            with st.spinner("正在执行全图分类..."):
-                from src.visualization import classification_to_rgb
-                predictions, _ = classify_image(st.session_state.classifier, st.session_state.features, progress_callback=callback)
-                st.session_state.classification_result = predictions
-                progress_bar.progress(1.0)
-                status_text.text("✅ 全图分类完成！")
-                st.success("✅ 全图分类完成！")
-                class_rgb, legend = classification_to_rgb(predictions, class_names=st.session_state.samples.class_names)
-                st.session_state.classification_rgb = class_rgb
-                st.session_state.classification_legend = legend
-        except Exception as e:
-            st.error(f"❌ 分类失败: {str(e)}")
-            progress_bar.progress(0)
-            status_text.text("")
+            try:
+                with st.spinner("正在执行全图分类..."):
+                    from src.visualization import classification_to_rgb
+                    predictions, _ = classify_image(st.session_state.classifier, st.session_state.features, progress_callback=callback)
+                    st.session_state.classification_result = predictions
+                    progress_bar.progress(1.0)
+                    status_text.text("✅ 全图分类完成！")
+                    st.success("✅ 全图分类完成！")
+                    class_rgb, legend = classification_to_rgb(predictions, class_names=st.session_state.samples.class_names)
+                    st.session_state.classification_rgb = class_rgb
+                    st.session_state.classification_legend = legend
+            except Exception as e:
+                st.error(f"❌ 分类失败: {str(e)}")
+                progress_bar.progress(0)
+                status_text.text("")
+
+    with col_classify2:
+        save_name = st.text_input("保存结果名称", value=f"{classifier_type.split(' ')[0]}_{pd.Timestamp.now().strftime('%H%M%S')}")
+        if st.button("💾 保存当前结果到对比历史"):
+            if st.session_state.classification_result is not None:
+                save_classification_result(
+                    save_name,
+                    st.session_state.classification_result,
+                    st.session_state.classification_rgb,
+                    st.session_state.classification_legend,
+                    st.session_state.metrics
+                )
+                st.success(f"✅ 已保存: {save_name}")
+            else:
+                st.warning("⚠️ 请先执行全图分类")
+
+st.markdown("---")
+st.subheader("🧪 超参数对比实验")
+st.info("💡 配置多组超参数，系统将自动遍历所有组合并对比结果")
+
+exp_classifier = st.selectbox("选择实验分类器", ["SVM (RBF核)", "随机森林"], key="exp_classifier")
+exp_val_ratio = st.slider("验证集比例（从训练集中划分）", 0.1, 0.4, 0.2, 0.05)
+
+if exp_classifier == "SVM (RBF核)":
+    st.markdown("##### SVM超参数网格")
+    col_svm1, col_svm2, col_svm3 = st.columns(3)
+    with col_svm1:
+        svm_c_mode = st.radio("C值采样方式", ["线性", "对数"], key="svm_c_mode")
+        svm_c_start = st.number_input("C起始值", 0.01, 1000.0, 0.1, key="svm_c_start")
+        svm_c_end = st.number_input("C结束值", 0.01, 1000.0, 100.0, key="svm_c_end")
+        svm_c_n = st.slider("C采样数", 2, 10, 5, key="svm_c_n")
+    with col_svm2:
+        svm_g_mode = st.radio("gamma采样方式", ["对数", "固定值"], key="svm_g_mode")
+        if svm_g_mode == "对数":
+            svm_g_start = st.number_input("gamma起始值", 0.0001, 100.0, 0.001, key="svm_g_start")
+            svm_g_end = st.number_input("gamma结束值", 0.0001, 100.0, 1.0, key="svm_g_end")
+            svm_g_n = st.slider("gamma采样数", 2, 10, 4, key="svm_g_n")
+            gamma_list = generate_param_grid_log(svm_g_start, svm_g_end, svm_g_n)
+        else:
+            gamma_manual = st.multiselect("gamma值", ['scale', 0.001, 0.01, 0.1, 1, 10], default=['scale', 0.01, 0.1], key="svm_g_manual")
+            gamma_list = gamma_manual
+    with col_svm3:
+        st.markdown("**参数组合预览**")
+        if svm_c_mode == "线性":
+            c_list = generate_param_grid_linear(svm_c_start, svm_c_end, svm_c_n)
+        else:
+            c_list = generate_param_grid_log(svm_c_start, svm_c_end, svm_c_n)
+        total_combos = len(c_list) * len(gamma_list)
+        st.metric("C值数量", len(c_list))
+        st.metric("gamma数量", len(gamma_list))
+        st.metric("总组合数", total_combos)
+        exp_param_grid = {'C': c_list, 'gamma': gamma_list}
+        exp_classifier_key = 'svm'
+
+elif exp_classifier == "随机森林":
+    st.markdown("##### 随机森林超参数网格")
+    col_rf1, col_rf2, col_rf3 = st.columns(3)
+    with col_rf1:
+        rf_n_start = st.slider("n_estimators起始", 10, 500, 50, 10, key="rf_n_start")
+        rf_n_end = st.slider("n_estimators结束", 10, 500, 200, 10, key="rf_n_end")
+        rf_n_n = st.slider("n_estimators采样数", 2, 6, 3, key="rf_n_n")
+        n_est_list = [int(x) for x in generate_param_grid_linear(rf_n_start, rf_n_end, rf_n_n)]
+    with col_rf2:
+        rf_d_start = st.slider("max_depth起始", 3, 50, 5, 1, key="rf_d_start")
+        rf_d_end = st.slider("max_depth结束", 3, 50, 25, 1, key="rf_d_end")
+        rf_d_n = st.slider("max_depth采样数", 2, 6, 3, key="rf_d_n")
+        max_depth_list = [int(x) for x in generate_param_grid_linear(rf_d_start, rf_d_end, rf_d_n)]
+    with col_rf3:
+        rf_feat = st.multiselect("max_features", ['sqrt', 'log2', 0.3, 0.5, 0.7], default=['sqrt', 'log2', 0.5], key="rf_feat")
+        total_combos = len(n_est_list) * len(max_depth_list) * len(rf_feat)
+        st.metric("总组合数", total_combos)
+        exp_param_grid = {'n_estimators': n_est_list, 'max_depth': max_depth_list, 'max_features': rf_feat}
+        exp_classifier_key = 'random_forest'
+
+if st.button("⚡ 开始超参数实验", type='primary'):
+    if total_combos > 100:
+        st.warning(f"⚠️ 组合数较多({total_combos})，可能需要较长时间")
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    callback = create_progress_callback(progress_bar, status_text)
+
+    try:
+        from src.classification import train_test_split
+        X_train = st.session_state.train_samples.features
+        y_train = st.session_state.train_samples.labels
+
+        X_tr, X_val, y_tr, y_val = train_test_split(
+            X_train, y_train, test_size=exp_val_ratio, stratify=True, random_state=42
+        )
+
+        with st.spinner("正在运行超参数对比实验..."):
+            results = run_hyperparameter_experiment(
+                exp_classifier_key,
+                X_tr, y_tr, X_val, y_val,
+                exp_param_grid,
+                progress_callback=callback,
+                class_names=st.session_state.samples.class_names
+            )
+
+        st.session_state.hyperparam_results = results
+        st.session_state.hyperparam_best_idx = None
+
+        progress_bar.progress(1.0)
+        status_text.text("✅ 超参数实验完成！")
+        st.success(f"✅ 实验完成！共测试 {len(results)} 组参数")
+
+    except Exception as e:
+        st.error(f"❌ 实验失败: {str(e)}")
+        progress_bar.progress(0)
+        status_text.text("")
+        import traceback
+        st.code(traceback.format_exc())
+
+if st.session_state.hyperparam_results is not None:
+    results = st.session_state.hyperparam_results
+
+    st.markdown("---")
+    st.subheader("📊 实验结果")
+
+    results_sorted = sorted(results, key=lambda x: x['oa'], reverse=True)
+    best_idx = results_sorted[0]['index']
+    st.session_state.hyperparam_best_idx = best_idx
+
+    df_data = []
+    for r in results_sorted:
+        row = {'组合编号': r['index'] + 1}
+        for k, v in r['params'].items():
+            row[k] = str(v)
+        row['OA (%)'] = f"{r['oa']*100:.2f}"
+        row['Kappa'] = f"{r['kappa']:.4f}"
+        row['排名'] = results_sorted.index(r) + 1
+        df_data.append(row)
+
+    results_df = pd.DataFrame(df_data)
+
+    def highlight_best(row):
+        return ['background-color: #d4edda' if row['排名'] == 1 else '' for _ in row]
+
+    st.dataframe(results_df.style.apply(highlight_best, axis=1), use_container_width=True, height=350)
+
+    best_result = results_sorted[0]
+    col_info1, col_info2, col_info3 = st.columns(3)
+    col_info1.metric("🏆 最优OA", f"{best_result['oa']*100:.2f}%")
+    col_info2.metric("🏆 最优Kappa", f"{best_result['kappa']:.4f}")
+    col_info3.metric("🏆 最优参数组合", f"#{best_result['index'] + 1}")
+    st.info(f"🎯 最优参数: {best_result['params']}")
+
+    st.markdown("---")
+    if exp_classifier == "SVM (RBF核)" and len(c_list) > 1 and len(gamma_list) > 1:
+        st.subheader("🔥 SVM参数热力图")
+
+        oa_matrix = np.zeros((len(c_list), len(gamma_list)))
+        kappa_matrix = np.zeros((len(c_list), len(gamma_list)))
+        for r in results:
+            c_idx = c_list.index(r['params']['C'])
+            try:
+                g_idx = gamma_list.index(r['params']['gamma'])
+            except ValueError:
+                continue
+            oa_matrix[c_idx, g_idx] = r['oa']
+            kappa_matrix[c_idx, g_idx] = r['kappa']
+
+        gamma_labels = [str(g) for g in gamma_list]
+        c_labels = [f"{c:.4f}" if isinstance(c, float) else str(c) for c in c_list]
+
+        heatmap_metric = st.radio("热力图指标", ["OA", "Kappa"], horizontal=True, key="heatmap_metric")
+        heatmap_data = oa_matrix * 100 if heatmap_metric == "OA" else kappa_matrix
+        zmin, zmax = (0, 100) if heatmap_metric == "OA" else (0, 1)
+
+        fig = px.imshow(
+            heatmap_data,
+            x=gamma_labels, y=c_labels,
+            text_auto='.2f' if heatmap_metric == "OA" else '.3f',
+            color_continuous_scale='YlOrRd',
+            zmin=zmin, zmax=zmax,
+            title=f"SVM超参数{heatmap_metric}热力图",
+            aspect='auto',
+            labels=dict(x="gamma", y="C", color=heatmap_metric)
+        )
+        fig.update_layout(height=500)
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("---")
+    col_apply1, col_apply2 = st.columns([1, 1])
+
+    with col_apply1:
+        selected_idx = st.selectbox(
+            "选择要应用的参数组合",
+            options=[r['index'] for r in results_sorted],
+            format_func=lambda x: f"组合 #{x+1} - OA: {results[x]['oa']*100:.2f}%",
+            index=0,
+            key="selected_combo"
+        )
+        selected_params = results[selected_idx]['params']
+        st.info(f"已选参数: {selected_params}")
+
+    with col_apply2:
+        apply_save_name = st.text_input("结果保存名称", value=f"{exp_classifier.split(' ')[0]}_exp_{pd.Timestamp.now().strftime('%H%M%S')}", key="apply_save_name")
+        apply_and_save = st.checkbox("完成后自动保存到对比历史", True, key="apply_save_check")
+
+        if st.button("🚀 用所选参数训练并分类全图", type='primary'):
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            callback = create_progress_callback(progress_bar, status_text)
+
+            try:
+                with st.spinner("正在训练并分类..."):
+                    if exp_classifier_key == 'svm':
+                        train_params = {
+                            'C': [selected_params['C']],
+                            'gamma': [selected_params['gamma']],
+                            'grid_search': False,
+                            'cv': 3
+                        }
+                    elif exp_classifier_key == 'random_forest':
+                        max_feat = selected_params['max_features']
+                        train_params = {
+                            'n_estimators': int(selected_params['n_estimators']),
+                            'max_depth': int(selected_params['max_depth']),
+                            'max_features': max_feat if isinstance(max_feat, str) else float(max_feat)
+                        }
+
+                    classifier = create_classifier(exp_classifier_key, **train_params)
+                    train_X = st.session_state.train_samples.features
+                    train_y = st.session_state.train_samples.labels
+
+                    train_info = classifier.fit(train_X, train_y, progress_callback=callback)
+                    st.session_state.classifier = classifier
+                    st.session_state.train_info = train_info
+
+                    from src.visualization import classification_to_rgb
+                    predictions, _ = classify_image(
+                        st.session_state.classifier, st.session_state.features,
+                        progress_callback=lambda p, m: callback(0.5 + 0.5 * p, m)
+                    )
+
+                    st.session_state.classification_result = predictions
+                    class_rgb, legend = classification_to_rgb(
+                        predictions, class_names=st.session_state.samples.class_names
+                    )
+                    st.session_state.classification_rgb = class_rgb
+                    st.session_state.classification_legend = legend
+
+                    if apply_and_save:
+                        save_classification_result(
+                            apply_save_name,
+                            predictions, class_rgb, legend, None
+                        )
+
+                    progress_bar.progress(1.0)
+                    status_text.text("✅ 完成！")
+                    st.success("✅ 训练并分类完成！")
+
+            except Exception as e:
+                st.error(f"❌ 失败: {str(e)}")
+                progress_bar.progress(0)
+                status_text.text("")
+                import traceback
+                st.code(traceback.format_exc())

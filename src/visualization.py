@@ -271,3 +271,80 @@ def generate_classification_legend(legend: Dict[int, Dict]) -> str:
         )
     html_lines.append('</div>')
     return ''.join(html_lines)
+
+
+def create_error_spatial_map(labels: np.ndarray, predictions: np.ndarray,
+                            background: np.ndarray = None,
+                            alpha: float = 0.6) -> Tuple[np.ndarray, np.ndarray]:
+    if labels.shape != predictions.shape:
+        raise ValueError("Labels and predictions must have same shape")
+
+    H, W = labels.shape
+    error_mask = (labels != predictions) & (labels > 0)
+
+    if background is None:
+        display = np.zeros((H, W, 3), dtype=np.float32)
+    else:
+        display = normalize_image(background.copy()).astype(np.float32)
+        if display.ndim == 2:
+            display = np.stack([display] * 3, axis=-1)
+
+    overlay = display.copy()
+    overlay[error_mask] = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    display = (1 - alpha) * display + alpha * overlay
+
+    return display, error_mask
+
+
+def create_comparison_diff_map(result1: np.ndarray, result2: np.ndarray,
+                                background: np.ndarray = None,
+                                alpha: float = 0.5) -> Tuple[np.ndarray, Dict]:
+    if result1.shape != result2.shape:
+        raise ValueError("Results must have same shape")
+
+    H, W = result1.shape
+    agree_mask = result1 == result2
+    disagree_mask = ~agree_mask
+
+    if background is None:
+        display = np.ones((H, W, 3), dtype=np.float32) * 0.5
+    else:
+        display = normalize_image(background.copy()).astype(np.float32)
+        if display.ndim == 2:
+            display = np.stack([display] * 3, axis=-1)
+
+    display[agree_mask] = display[agree_mask] * 0.4 + np.array([0.5, 0.5, 0.5]) * 0.6
+
+    diff_only1 = np.zeros((H, W, 3), dtype=np.float32)
+    diff_only2 = np.zeros((H, W, 3), dtype=np.float32)
+
+    result1_unique = result1[disagree_mask]
+    result2_unique = result2[disagree_mask]
+
+    all_classes = sorted(np.unique(np.concatenate([result1, result2])).tolist())
+    cmap = create_colormap(len(all_classes))
+    class_color_map = {}
+    for i, cls in enumerate(all_classes):
+        color = cmap(i)[:3]
+        class_color_map[cls] = np.array(color, dtype=np.float32)
+
+    result1_colored = np.zeros((H, W, 3), dtype=np.float32)
+    result2_colored = np.zeros((H, W, 3), dtype=np.float32)
+    for cls, color in class_color_map.items():
+        m1 = (result1 == cls) & disagree_mask
+        m2 = (result2 == cls) & disagree_mask
+        result1_colored[m1] = color
+        result2_colored[m2] = color
+
+    display[disagree_mask] = (1 - alpha) * display[disagree_mask] + alpha * (
+        result1_colored[disagree_mask] * 0.5 + result2_colored[disagree_mask] * 0.5
+    )
+
+    stats = {
+        'total_pixels': H * W,
+        'agree_pixels': int(np.sum(agree_mask)),
+        'disagree_pixels': int(np.sum(disagree_mask)),
+        'agreement_ratio': float(np.sum(agree_mask) / (H * W))
+    }
+
+    return display, stats

@@ -666,3 +666,83 @@ def train_test_split(X: np.ndarray, y: np.ndarray,
         train_idx = indices[n_test:]
 
     return X[train_idx], X[test_idx], y[train_idx], y[test_idx]
+
+
+def run_hyperparameter_experiment(classifier_key: str,
+                                  X_train: np.ndarray, y_train: np.ndarray,
+                                  X_val: np.ndarray, y_val: np.ndarray,
+                                  param_grid: Dict[str, List],
+                                  progress_callback=None,
+                                  class_names: Dict[int, str] = None) -> List[Dict]:
+    from itertools import product
+    from sklearn.metrics import accuracy_score, cohen_kappa_score
+    from sklearn.preprocessing import StandardScaler
+
+    param_names = list(param_grid.keys())
+    param_values = [param_grid[name] for name in param_names]
+    all_combinations = list(product(*param_values))
+
+    results = []
+    total = len(all_combinations)
+
+    for idx, combo in enumerate(all_combinations):
+        if progress_callback:
+            progress = (idx + 0.3) / total
+            progress_callback(progress, f"测试组合 {idx+1}/{total}")
+
+        params = dict(zip(param_names, combo))
+        try:
+            if classifier_key == 'svm':
+                scaler = StandardScaler()
+                X_train_s = scaler.fit_transform(X_train)
+                X_val_s = scaler.transform(X_val)
+                C = params['C']
+                gamma = params['gamma'] if params['gamma'] != 'scale' else 'scale'
+                model = SVC(kernel='rbf', C=C, gamma=gamma, random_state=42)
+                model.fit(X_train_s, y_train)
+                y_pred = model.predict(X_val_s)
+
+            elif classifier_key == 'random_forest':
+                model = RandomForestClassifier(
+                    n_estimators=params.get('n_estimators', 100),
+                    max_depth=params.get('max_depth', None),
+                    max_features=params.get('max_features', 'sqrt'),
+                    n_jobs=-1, random_state=42
+                )
+                model.fit(X_train, y_train)
+                y_pred = model.predict(X_val)
+
+            else:
+                continue
+
+            oa = accuracy_score(y_val, y_pred)
+            kappa = cohen_kappa_score(y_val, y_pred)
+
+            results.append({
+                'params': params,
+                'oa': float(oa),
+                'kappa': float(kappa),
+                'index': idx
+            })
+
+        except Exception as e:
+            results.append({
+                'params': params,
+                'oa': 0.0,
+                'kappa': 0.0,
+                'index': idx,
+                'error': str(e)
+            })
+
+    if progress_callback:
+        progress_callback(1.0, f"完成 {total} 组实验")
+
+    return results
+
+
+def generate_param_grid_linear(start: float, end: float, n_points: int) -> List[float]:
+    return np.linspace(start, end, n_points).tolist()
+
+
+def generate_param_grid_log(start: float, end: float, n_points: int) -> List[float]:
+    return np.logspace(np.log10(start), np.log10(end), n_points).tolist()

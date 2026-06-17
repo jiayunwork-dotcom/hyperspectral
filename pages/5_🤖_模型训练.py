@@ -332,18 +332,43 @@ if st.button("⚡ 开始超参数实验", type='primary'):
 
     try:
         from src.classification import train_test_split
-        X_train = st.session_state.train_samples.features
-        y_train = st.session_state.train_samples.labels
+        X_train_all = st.session_state.train_samples.features
+        y_train_all = st.session_state.train_samples.labels
+        train_locs_all = st.session_state.train_samples.locations
 
-        X_tr, X_val, y_tr, y_val = train_test_split(
-            X_train, y_train, test_size=exp_val_ratio, stratify=True, random_state=42
-        )
+        n_samples = len(y_train_all)
+        indices = np.arange(n_samples)
+        rng = np.random.RandomState(42)
+        rng.shuffle(indices)
+        n_val = int(n_samples * exp_val_ratio)
+        val_idx = indices[:n_val]
+        tr_idx = indices[n_val:]
+
+        X_tr = X_train_all[tr_idx]
+        y_tr = y_train_all[tr_idx]
+        X_val = X_train_all[val_idx]
+        y_val = y_train_all[val_idx]
 
         extra_kwargs = {}
         if exp_classifier_key == '3d_cnn':
             extra_kwargs['data_image'] = st.session_state.data
-            if 'window_size' in exp_param_grid:
-                extra_kwargs['window_size'] = min(exp_param_grid['window_size'])
+            if train_locs_all is not None:
+                train_locs_all = np.array(train_locs_all, dtype=np.int32)
+                extra_kwargs['train_locations'] = train_locs_all[tr_idx]
+                extra_kwargs['val_locations'] = train_locs_all[val_idx]
+            else:
+                H, W, _ = st.session_state.data.shape
+                half_ws = 7
+                tr_locs = np.column_stack([
+                    rng.randint(half_ws, H - half_ws, len(y_tr)),
+                    rng.randint(half_ws, W - half_ws, len(y_tr))
+                ])
+                val_locs = np.column_stack([
+                    rng.randint(half_ws, H - half_ws, len(y_val)),
+                    rng.randint(half_ws, W - half_ws, len(y_val))
+                ])
+                extra_kwargs['train_locations'] = tr_locs
+                extra_kwargs['val_locations'] = val_locs
 
         with st.spinner("正在运行超参数对比实验..."):
             results = run_hyperparameter_experiment(

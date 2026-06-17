@@ -289,6 +289,8 @@ class OneDCNNClassifier(HSIClassifier):
                 progress_callback(progress,
                                 f"Epoch {epoch+1}/{self.n_epochs}: Loss={epoch_loss:.4f}, Acc={epoch_acc:.4f}")
 
+        self.params['label_map'] = label_map
+        self.params['n_classes'] = n_classes
         return {
             'train_losses': train_losses,
             'train_accuracies': train_accs,
@@ -402,6 +404,7 @@ class ThreeDCNNClassifier(HSIClassifier):
 
     def fit(self, X: np.ndarray, y: np.ndarray,
             data_image: Optional[np.ndarray] = None,
+            train_locations: Optional[np.ndarray] = None,
             progress_callback=None) -> Dict:
         if data_image is None:
             raise ValueError("data_image is required for 3D CNN")
@@ -420,9 +423,16 @@ class ThreeDCNNClassifier(HSIClassifier):
         data_scaled = self.scaler.transform(data_flat).reshape(H, W, B)
 
         n_train = len(y)
-        rows = np.random.randint(0, H, n_train)
-        cols = np.random.randint(0, W, n_train)
-        locations = np.column_stack([rows, cols])
+        if train_locations is not None and len(train_locations) == n_train:
+            locations = np.array(train_locations, dtype=np.int32)
+            half_w = self.window_size // 2
+            locations[:, 0] = np.clip(locations[:, 0], half_w, H - half_w - 1)
+            locations[:, 1] = np.clip(locations[:, 1], half_w, W - half_w - 1)
+        else:
+            half_w = self.window_size // 2
+            rows = np.random.randint(half_w, H - half_w, n_train)
+            cols = np.random.randint(half_w, W - half_w, n_train)
+            locations = np.column_stack([rows, cols])
 
         patches = self._extract_patches(data_scaled, locations)
 
@@ -467,6 +477,9 @@ class ThreeDCNNClassifier(HSIClassifier):
                 progress_callback(progress,
                                 f"Epoch {epoch+1}/{self.n_epochs}: Loss={epoch_loss:.4f}, Acc={epoch_acc:.4f}")
 
+        self.params['label_map'] = label_map
+        self.params['n_classes'] = n_classes
+        self.params['window_size'] = self.window_size
         return {
             'train_losses': train_losses,
             'train_accuracies': train_accs,
@@ -546,6 +559,55 @@ class ThreeDCNNClassifier(HSIClassifier):
         inv_label_map = {i: cls for cls, i in self.params.get('label_map', {}).items()}
         if inv_label_map:
             predictions = np.vectorize(lambda x: inv_label_map.get(x, x))(predictions)
+
+        return predictions
+
+    def predict_samples(self, X: np.ndarray,
+                        data_image: Optional[np.ndarray] = None,
+                        val_locations: Optional[np.ndarray] = None,
+                        progress_callback=None) -> np.ndarray:
+        if self.model is None:
+            raise ValueError("Model not trained")
+        if data_image is None:
+            raise ValueError("data_image is required for 3D CNN prediction")
+
+        self.model.eval()
+        H, W, B = data_image.shape
+
+        data_flat = reshape_for_classifier(data_image)
+        data_scaled = self.scaler.transform(data_flat).reshape(H, W, B)
+
+        n_samples = len(X)
+        half_w = self.window_size // 2
+
+        if val_locations is not None and len(val_locations) == n_samples:
+            locations = np.array(val_locations, dtype=np.int32)
+            locations[:, 0] = np.clip(locations[:, 0], half_w, H - half_w - 1)
+            locations[:, 1] = np.clip(locations[:, 1], half_w, W - half_w - 1)
+        else:
+            rows = np.random.randint(half_w, H - half_w, n_samples)
+            cols = np.random.randint(half_w, W - half_w, n_samples)
+            locations = np.column_stack([rows, cols])
+
+        predictions = np.zeros(n_samples, dtype=np.int32)
+
+        with torch.no_grad():
+            for start in range(0, n_samples, self.batch_size):
+                end = min(start + self.batch_size, n_samples)
+                batch_locations = locations[start:end]
+                patches = self._extract_patches(data_scaled, batch_locations)
+                batch = torch.FloatTensor(patches).to(self.device)
+                outputs = self.model(batch)
+                _, predicted = torch.max(outputs.data, 1)
+                predictions[start:end] = predicted.cpu().numpy()
+
+                if progress_callback:
+                    progress = end / n_samples
+                    progress_callback(progress, f"Predicting samples {start}-{end}/{n_samples}")
+
+        inv_label_map = {i: cls for cls, i in self.params.get('label_map', {}).items()}
+        if inv_label_map:
+            predictions = np.array([inv_label_map[p] for p in predictions])
 
         return predictions
 
@@ -675,7 +737,8 @@ def run_hyperparameter_experiment(classifier_key: str,
                                   progress_callback=None,
                                   class_names: Dict[int, str] = None,
                                   data_image: np.ndarray = None,
-                                  window_size: int = 5) -> List[Dict]:
+                                  train_locations: np.ndarray = None,
+                                  val_locations: np.ndarray = None) -> List[Dict]:
     from itertools import product
     from sklearn.metrics import accuracy_score, cohen_kappa_score
     from sklearn.preprocessing import StandardScaler
@@ -731,10 +794,12 @@ def run_hyperparameter_experiment(classifier_key: str,
                 n_epochs = int(params.get('n_epochs', 30))
                 batch_size = int(params.get('batch_size', 128))
                 learning_rate = float(params.get('learning_rate', 0.001))
-                ws = int(params.get('window_size', window_size))
+                ws = int(params.get('window_size', 5))
 
                 if data_image is None:
                     raise ValueError("3D CNN需要影像数据")
+
+                H, W, B = data_image.shape
 
                 classifier = ThreeDCNNClassifier(
                     n_epochs=n_epochs,
@@ -743,25 +808,15 @@ def run_hyperparameter_experiment(classifier_key: str,
                     window_size=ws
                 )
 
-                n_train = len(X_train)
-                n_val = len(X_val)
-                H, W, B = data_image.shape
-
-                rng = np.random.RandomState(42 + idx)
-                train_rows = rng.randint(ws, H - ws, n_train)
-                train_cols = rng.randint(ws, W - ws, n_train)
-                val_rows = rng.randint(ws, H - ws, n_val)
-                val_cols = rng.randint(ws, W - ws, n_val)
-
-                train_locations = np.column_stack([train_rows, train_cols])
-                val_locations = np.column_stack([val_rows, val_cols])
-
                 classifier.fit(X_train, y_train,
                              data_image=data_image,
                              train_locations=train_locations)
-                y_pred = classifier.predict(X_val,
-                                          data_image=data_image,
-                                          val_locations=val_locations)
+
+                y_pred = classifier.predict_samples(
+                    X_val,
+                    data_image=data_image,
+                    val_locations=val_locations
+                )
 
             else:
                 continue
@@ -777,12 +832,13 @@ def run_hyperparameter_experiment(classifier_key: str,
             })
 
         except Exception as e:
+            import traceback
             results.append({
                 'params': params,
                 'oa': 0.0,
                 'kappa': 0.0,
                 'index': idx,
-                'error': str(e)
+                'error': str(e) + "\n" + traceback.format_exc()
             })
 
     if progress_callback:

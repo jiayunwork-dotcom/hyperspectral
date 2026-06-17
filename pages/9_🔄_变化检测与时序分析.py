@@ -11,6 +11,7 @@ from PIL import Image
 from state import init_session_state, save_uploaded_file, create_progress_callback
 from src.data_io import load_envi_data, get_image_info
 from src.visualization import get_true_color, generate_classification_legend
+from src.utils import parse_map_info
 from src.change_detection import (
     align_images,
     sad_change_detection,
@@ -392,6 +393,19 @@ if images_aligned and st.session_state.change_aligned_a is not None:
                     key='geojson_pixel_size'
                 )
 
+            header_a = st.session_state.change_header_a
+            map_info = None
+            coord_sys = None
+            if header_a and header_a.map_info:
+                map_info = parse_map_info(header_a.map_info)
+                coord_sys = header_a.coordinate_system_string if header_a.coordinate_system_string else None
+                if map_info:
+                    st.caption(f"🗺️ 检测到地理参考: {map_info['projection']}, 像素大小: {map_info['pixel_size'][0]:.4f} × {map_info['pixel_size'][1]:.4f} {map_info.get('units', 'Meters')}")
+                else:
+                    st.caption("⚠️ 头文件中有map_info但解析失败，将使用像素坐标")
+            else:
+                st.caption("⚠️ 影像无头文件地理参考信息，导出坐标为像素行列号")
+
             if st.button("🗺️ 生成GeoJSON矢量结果", key='gen_geojson_btn'):
                 with st.spinner("正在提取变化区域并生成GeoJSON..."):
                     try:
@@ -403,12 +417,17 @@ if images_aligned and st.session_state.change_aligned_a is not None:
                             class_names=st.session_state.samples.class_names if st.session_state.samples else None,
                             min_area_pixels=min_area_pixels,
                             pixel_size=pixel_size if pixel_size > 0 else None,
+                            map_info=map_info,
+                            coordinate_system=coord_sys,
                         )
                         st.session_state.change_geojson = geojson
                         n_features = len(geojson['features'])
+                        coord_type = geojson['metadata']['coordinate_type']
+                        coord_label = '地理坐标' if coord_type == 'geographic' else '像素坐标'
                         st.success(f"✅ GeoJSON生成成功，共提取 {n_features} 个变化区域")
                         st.info(f"📊 元数据: 总变化像素 {geojson['metadata']['total_change_pixels']:,}, "
-                                f"变化占比 {geojson['metadata']['change_ratio']*100:.2f}%")
+                                f"变化占比 {geojson['metadata']['change_ratio']*100:.2f}%, "
+                                f"坐标类型: {coord_label}")
                     except Exception as e:
                         st.error(f"❌ GeoJSON生成失败: {str(e)}")
                         import traceback
@@ -582,23 +601,78 @@ if images_aligned and st.session_state.change_aligned_a is not None:
 
             st.markdown("#### 🎯 Kappa一致性系数矩阵")
 
-            kappa_data = []
             algo_list = list(area_ratios.keys())
-            for i, a1 in enumerate(algo_list):
-                row = {'算法': algo_names_map.get(a1, a1)}
-                for j, a2 in enumerate(algo_list):
+            n_algos = len(algo_list)
+            algo_labels = [algo_names_map.get(a, a) for a in algo_list]
+
+            kappa_matrix = np.ones((n_algos, n_algos))
+            hover_text = []
+
+            for i in range(n_algos):
+                row_hover = []
+                for j in range(n_algos):
                     if i == j:
-                        row[algo_names_map.get(a2, a2)] = 1.0
+                        kappa_matrix[i, j] = 1.0
+                        row_hover.append(f"<b>{algo_labels[i]} vs {algo_labels[j]}</b><br>Kappa: 1.0000<br><i>自身对比，完全一致</i>")
                     else:
-                        key = (a1, a2) if (a1, a2) in comp['kappa_matrix'] else (a2, a1)
+                        key = (algo_list[i], algo_list[j]) if (algo_list[i], algo_list[j]) in comp['kappa_matrix'] else (algo_list[j], algo_list[i])
                         kappa_val = comp['kappa_matrix'].get(key, 0.0)
-                        row[algo_names_map.get(a2, a2)] = round(kappa_val, 4)
-                kappa_data.append(row)
+                        kappa_matrix[i, j] = round(kappa_val, 4)
 
-            kappa_df = pd.DataFrame(kappa_data).set_index('算法')
-            st.dataframe(kappa_df.style.background_gradient(cmap='RdYlGn', vmin=0, vmax=1), use_container_width=True)
+                        if kappa_val < 0:
+                            level = "无一致性"
+                        elif kappa_val < 0.2:
+                            level = "极弱一致性"
+                        elif kappa_val < 0.4:
+                            level = "弱一致性"
+                        elif kappa_val < 0.6:
+                            level = "中等一致性"
+                        elif kappa_val < 0.8:
+                            level = "强一致性"
+                        else:
+                            level = "极强一致性"
 
-            st.caption("💡 Kappa系数: <0 无一致性, 0-0.2 极弱, 0.2-0.4 弱, 0.4-0.6 中等, 0.6-0.8 强, 0.8-1 极强")
+                        row_hover.append(
+                            f"<b>{algo_labels[i]} vs {algo_labels[j]}</b><br>"
+                            f"Kappa系数: {kappa_val:.4f}<br>"
+                            f"评价: {level}"
+                        )
+                hover_text.append(row_hover)
+
+            fig_kappa = go.Figure(data=go.Heatmap(
+                z=kappa_matrix,
+                x=algo_labels,
+                y=algo_labels,
+                text=kappa_matrix,
+                texttemplate='%{text:.4f}',
+                hovertemplate='%{hovertext}<extra></extra>',
+                customdata=hover_text,
+                hovertext=hover_text,
+                colorscale='RdYlGn',
+                zmin=0,
+                zmax=1,
+                showscale=True,
+                colorbar=dict(
+                    title='Kappa系数',
+                    tickvals=[0, 0.2, 0.4, 0.6, 0.8, 1.0],
+                    ticktext=['0<br>无', '0.2<br>极弱', '0.4<br>弱', '0.6<br>中等', '0.8<br>强', '1.0<br>极强'],
+                    thickness=20,
+                ),
+            ))
+
+            fig_kappa.update_layout(
+                title='Kappa一致性系数矩阵',
+                xaxis_title='算法',
+                yaxis_title='算法',
+                height=400 + n_algos * 30,
+                margin=dict(l=10, r=10, t=50, b=10),
+            )
+
+            fig_kappa.update_yaxes(autorange='reversed')
+
+            st.plotly_chart(fig_kappa, use_container_width=True)
+
+            st.caption("💡 Kappa系数评价标准: <0 无一致性, 0-0.2 极弱, 0.2-0.4 弱, 0.4-0.6 中等, 0.6-0.8 强, 0.8-1 极强。对角线为自身对比，Kappa恒为1.0")
 
             st.markdown("#### 🗺️ 变化区域重叠度热力图")
 
@@ -790,15 +864,50 @@ if images_aligned and st.session_state.change_aligned_a is not None:
                             legendgroup=f'node_{i}',
                         ))
 
-                        label_radius = arc_radius + 0.08
+                        label_radius = arc_radius + 0.12
+                        label_x = label_radius * np.cos(theta[i])
+                        label_y = label_radius * np.sin(theta[i])
+
+                        angle_deg = theta[i] * 180 / np.pi
+
+                        if -30 <= angle_deg <= 30:
+                            xanchor = 'left'
+                            yanchor = 'middle'
+                        elif 30 < angle_deg <= 60:
+                            xanchor = 'left'
+                            yanchor = 'bottom'
+                        elif 60 < angle_deg <= 120:
+                            xanchor = 'center'
+                            yanchor = 'bottom'
+                        elif 120 < angle_deg <= 150:
+                            xanchor = 'right'
+                            yanchor = 'bottom'
+                        elif 150 < angle_deg <= 210:
+                            xanchor = 'right'
+                            yanchor = 'middle'
+                        elif 210 < angle_deg <= 240:
+                            xanchor = 'right'
+                            yanchor = 'top'
+                        elif 240 < angle_deg <= 300:
+                            xanchor = 'center'
+                            yanchor = 'top'
+                        elif 300 < angle_deg <= 330:
+                            xanchor = 'left'
+                            yanchor = 'top'
+                        else:
+                            xanchor = 'left'
+                            yanchor = 'middle'
+
                         fig_chord.add_annotation(
-                            x=label_radius * np.cos(theta[i]),
-                            y=label_radius * np.sin(theta[i]),
+                            x=label_x,
+                            y=label_y,
                             text=labels[i],
                             showarrow=False,
-                            font=dict(size=10),
-                            xanchor='center',
-                            yanchor='middle',
+                            font=dict(size=9, color='#333333'),
+                            xanchor=xanchor,
+                            yanchor=yanchor,
+                            bgcolor='rgba(255,255,255,0.85)',
+                            borderpad=2,
                         )
 
                     max_val = max([matrix[i][j] for i in range(n) for j in range(n) if i != j] + [1])
@@ -857,19 +966,20 @@ if images_aligned and st.session_state.change_aligned_a is not None:
                     fig_chord.update_layout(
                         title_text=f'地物类别转移弦图 ({n}个类别)',
                         showlegend=True,
-                        height=700,
+                        height=600 + max(0, n - 8) * 30,
                         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False,
-                                   scaleanchor="y", scaleratio=1, range=[-1.2, 1.2]),
-                        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-1.2, 1.2]),
+                                   scaleanchor="y", scaleratio=1, range=[-1.5, 1.5]),
+                        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-1.5, 1.5]),
                         plot_bgcolor='white',
                         paper_bgcolor='white',
                         legend=dict(
                             orientation="h",
                             yanchor="bottom",
-                            y=-0.1,
+                            y=-0.15,
                             xanchor="center",
                             x=0.5,
-                            font=dict(size=9)
+                            font=dict(size=9),
+                            itemwidth=30,
                         ),
                     )
 

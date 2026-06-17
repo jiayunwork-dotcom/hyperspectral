@@ -1,7 +1,8 @@
 import numpy as np
 import tempfile
 import os
-from typing import Tuple, Optional, Union
+import re
+from typing import Tuple, Optional, Union, Dict, List
 
 
 def get_temp_file(suffix: str = '') -> str:
@@ -139,3 +140,71 @@ def get_envi_dtype(dtype: np.dtype) -> int:
         return 15
     else:
         raise ValueError(f"Unsupported dtype for ENVI: {dtype}")
+
+
+def parse_map_info(map_info_str: str) -> Optional[Dict]:
+    if not map_info_str or not map_info_str.strip():
+        return None
+
+    map_info_str = map_info_str.strip()
+    if map_info_str.startswith('{'):
+        map_info_str = map_info_str[1:]
+    if map_info_str.endswith('}'):
+        map_info_str = map_info_str[:-1]
+
+    parts = [p.strip() for p in map_info_str.split(',')]
+
+    if len(parts) < 7:
+        return None
+
+    try:
+        proj_name = parts[0]
+        ref_pixel_x = float(parts[1])
+        ref_pixel_y = float(parts[2])
+        ref_easting = float(parts[3])
+        ref_northing = float(parts[4])
+        pixel_size_x = float(parts[5])
+        pixel_size_y = float(parts[6])
+
+        projection = ''
+        datum = ''
+        units = 'Meters'
+
+        if len(parts) > 7:
+            for i in range(7, len(parts)):
+                p = parts[i].strip()
+                if p.lower() in ['meters', 'feet', 'us feet']:
+                    units = p
+                elif 'WGS' in p.upper() or 'NAD' in p.upper() or 'DATUM' in p.upper():
+                    datum = p
+
+        return {
+            'projection': proj_name,
+            'reference_pixel': (ref_pixel_x, ref_pixel_y),
+            'reference_coords': (ref_easting, ref_northing),
+            'pixel_size': (pixel_size_x, pixel_size_y),
+            'units': units,
+            'datum': datum,
+            'rotation': 0.0,
+        }
+    except (ValueError, IndexError):
+        return None
+
+
+def pixel_to_geo(x: float, y: float, map_info: Dict) -> Tuple[float, float]:
+    ref_x, ref_y = map_info['reference_pixel']
+    ref_e, ref_n = map_info['reference_coords']
+    ps_x, ps_y = map_info['pixel_size']
+
+    geo_x = ref_e + (x - ref_x + 1) * ps_x
+    geo_y = ref_n - (y - ref_y + 1) * ps_y
+
+    return geo_x, geo_y
+
+
+def pixels_to_geo_coords(coords: List[List[float]], map_info: Dict) -> List[List[float]]:
+    geo_coords = []
+    for x, y in coords:
+        gx, gy = pixel_to_geo(x, y, map_info)
+        geo_coords.append([gx, gy])
+    return geo_coords

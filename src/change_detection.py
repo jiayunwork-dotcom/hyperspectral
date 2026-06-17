@@ -506,10 +506,16 @@ def export_change_to_geojson(change_mask: np.ndarray,
                             class_b: Optional[np.ndarray] = None,
                             class_names: Optional[Dict[int, str]] = None,
                             min_area_pixels: int = 10,
-                            pixel_size: Optional[float] = None) -> Dict:
+                            pixel_size: Optional[float] = None,
+                            map_info: Optional[Dict] = None,
+                            coordinate_system: Optional[str] = None) -> Dict:
+    from .utils import pixels_to_geo_coords
+
     H, W = change_mask.shape
 
     polygons = mask_to_polygons(change_mask, min_area_pixels=min_area_pixels)
+
+    has_geo = map_info is not None
 
     features = []
 
@@ -538,7 +544,15 @@ def export_change_to_geojson(change_mask: np.ndarray,
         mean_intensity = float(np.mean(region_intensity)) if len(region_intensity) > 0 else 0.0
 
         area_pixels = poly['area_pixels']
-        area_m2 = area_pixels * (pixel_size ** 2) if pixel_size is not None else None
+
+        if pixel_size is None and has_geo:
+            ps_x, ps_y = map_info['pixel_size']
+            ps_avg = (abs(ps_x) + abs(ps_y)) / 2.0
+            area_m2 = area_pixels * (ps_avg ** 2)
+        elif pixel_size is not None:
+            area_m2 = area_pixels * (pixel_size ** 2)
+        else:
+            area_m2 = None
 
         transition_info = None
         if class_a is not None and class_b is not None:
@@ -577,11 +591,17 @@ def export_change_to_geojson(change_mask: np.ndarray,
         if transition_info is not None:
             properties.update(transition_info)
 
+        if has_geo:
+            exterior_coords = pixels_to_geo_coords(poly['coordinates'][0], map_info)
+            poly_coords_out = [exterior_coords]
+        else:
+            poly_coords_out = poly['coordinates']
+
         feature = {
             'type': 'Feature',
             'geometry': {
                 'type': 'Polygon',
-                'coordinates': poly['coordinates']
+                'coordinates': poly_coords_out
             },
             'properties': properties
         }
@@ -589,21 +609,37 @@ def export_change_to_geojson(change_mask: np.ndarray,
 
     geojson = {
         'type': 'FeatureCollection',
-        'crs': {
-            'type': 'name',
-            'properties': {
-                'name': 'urn:ogc:def:crs:EPSG::4326'
-            }
-        },
         'metadata': {
             'image_dimensions': {'height': H, 'width': W},
             'total_change_regions': len(features),
             'total_change_pixels': int(np.sum(change_mask)),
             'total_pixels': int(change_mask.size),
             'change_ratio': round(float(np.sum(change_mask) / change_mask.size), 6),
+            'coordinate_type': 'geographic' if has_geo else 'pixel',
         },
         'features': features
     }
+
+    if has_geo and coordinate_system:
+        crs_name = coordinate_system.strip()
+        if crs_name:
+            geojson['crs'] = {
+                'type': 'name',
+                'properties': {
+                    'name': crs_name
+                }
+            }
+            geojson['metadata']['coordinate_system'] = crs_name
+    elif has_geo and map_info.get('datum'):
+        geojson['metadata']['datum'] = map_info['datum']
+        geojson['metadata']['projection'] = map_info['projection']
+
+    if has_geo and map_info:
+        geojson['metadata']['pixel_size'] = {
+            'x': map_info['pixel_size'][0],
+            'y': map_info['pixel_size'][1],
+            'units': map_info.get('units', 'Meters')
+        }
 
     return geojson
 
@@ -756,7 +792,7 @@ def prepare_chord_diagram_data(transition_matrix: np.ndarray,
                     'source': labels[i],
                     'target': labels[j],
                     'pixels': count,
-                    'percentage': round(count / total * 100, 4) if total > 0 else 0.0,
+                    'percentage': round(count / total * 100, 2) if total > 0 else 0.0,
                 })
 
     return {

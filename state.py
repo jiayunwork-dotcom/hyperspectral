@@ -61,6 +61,14 @@ def init_session_state():
         'change_selected_region': None,
         'change_wavelengths_a': None,
         'change_wavelengths_b': None,
+        'change_geojson': None,
+        'multi_algo_comparison': None,
+        'temporal_images': [],
+        'temporal_headers': [],
+        'temporal_wavelengths': [],
+        'temporal_aligned': False,
+        'temporal_analysis': None,
+        'chord_data': None,
     }
     for key, default in defaults.items():
         if key not in st.session_state:

@@ -1,7 +1,10 @@
 import numpy as np
+import json
+import cv2
 from typing import Tuple, Dict, List, Optional
 from scipy import stats
 from sklearn.decomposition import PCA
+from sklearn.metrics import cohen_kappa_score
 from .utils import reshape_for_classifier, chunk_generator
 
 
@@ -463,3 +466,303 @@ def average_spectrum_in_region(data: np.ndarray,
     avg_spectrum = np.mean(masked_data, axis=0)
 
     return avg_spectrum.astype(np.float32)
+
+
+def mask_to_polygons(change_mask: np.ndarray,
+                    min_area_pixels: int = 10,
+                    simplify_tolerance: float = 1.0) -> List[Dict]:
+    mask_uint8 = (change_mask.astype(np.uint8) * 255)
+
+    contours, hierarchy = cv2.findContours(
+        mask_uint8,
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    polygons = []
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area < min_area_pixels:
+            continue
+
+        epsilon = simplify_tolerance * cv2.arcLength(contour, True)
+        approx = cv2.approxPolyDP(contour, epsilon, True)
+
+        if len(approx) >= 3:
+            coords = approx.reshape(-1, 2).tolist()
+            coords.append(coords[0])
+            polygons.append({
+                'type': 'Polygon',
+                'coordinates': [coords],
+                'area_pixels': int(area),
+            })
+
+    return polygons
+
+
+def export_change_to_geojson(change_mask: np.ndarray,
+                            intensity_map: np.ndarray,
+                            class_a: Optional[np.ndarray] = None,
+                            class_b: Optional[np.ndarray] = None,
+                            class_names: Optional[Dict[int, str]] = None,
+                            min_area_pixels: int = 10,
+                            pixel_size: Optional[float] = None) -> Dict:
+    H, W = change_mask.shape
+
+    polygons = mask_to_polygons(change_mask, min_area_pixels=min_area_pixels)
+
+    features = []
+
+    for idx, poly in enumerate(polygons):
+        poly_coords = np.array(poly['coordinates'][0][:-1])
+
+        x_coords = poly_coords[:, 0]
+        y_coords = poly_coords[:, 1]
+        x_min, x_max = int(np.min(x_coords)), int(np.max(x_coords))
+        y_min, y_max = int(np.min(y_coords)), int(np.max(y_coords))
+
+        x_min = max(0, x_min)
+        x_max = min(W - 1, x_max)
+        y_min = max(0, y_min)
+        y_max = min(H - 1, y_max)
+
+        mask_region = np.zeros((y_max - y_min + 1, x_max - x_min + 1), dtype=np.uint8)
+        shifted_coords = poly_coords - np.array([x_min, y_min])
+        cv2.fillPoly(mask_region, [shifted_coords.astype(np.int32)], 1)
+
+        full_mask = np.zeros((H, W), dtype=bool)
+        full_mask[y_min:y_max+1, x_min:x_max+1] = mask_region.astype(bool)
+        full_mask = full_mask & change_mask
+
+        region_intensity = intensity_map[full_mask]
+        mean_intensity = float(np.mean(region_intensity)) if len(region_intensity) > 0 else 0.0
+
+        area_pixels = poly['area_pixels']
+        area_m2 = area_pixels * (pixel_size ** 2) if pixel_size is not None else None
+
+        transition_info = None
+        if class_a is not None and class_b is not None:
+            classes_a = class_a[full_mask]
+            classes_b = class_b[full_mask]
+            if len(classes_a) > 0 and len(classes_b) > 0:
+                unique_a, counts_a = np.unique(classes_a, return_counts=True)
+                unique_b, counts_b = np.unique(classes_b, return_counts=True)
+                dominant_a = int(unique_a[np.argmax(counts_a)])
+                dominant_b = int(unique_b[np.argmax(counts_b)])
+
+                name_a = class_names.get(dominant_a, f'Class {dominant_a}') if class_names else f'Class {dominant_a}'
+                name_b = class_names.get(dominant_b, f'Class {dominant_b}') if class_names else f'Class {dominant_b}'
+
+                transition_info = {
+                    'from_class_id': dominant_a,
+                    'from_class_name': name_a,
+                    'to_class_id': dominant_b,
+                    'to_class_name': name_b,
+                    'transition': f'{name_a} → {name_b}',
+                }
+
+        properties = {
+            'id': idx + 1,
+            'area_pixels': area_pixels,
+            'mean_change_intensity': round(mean_intensity, 6),
+            'max_change_intensity': round(float(np.max(region_intensity)), 6) if len(region_intensity) > 0 else 0.0,
+            'min_change_intensity': round(float(np.min(region_intensity)), 6) if len(region_intensity) > 0 else 0.0,
+            'std_change_intensity': round(float(np.std(region_intensity)), 6) if len(region_intensity) > 0 else 0.0,
+        }
+
+        if area_m2 is not None:
+            properties['area_m2'] = round(area_m2, 4)
+            properties['area_hectare'] = round(area_m2 / 10000.0, 6)
+
+        if transition_info is not None:
+            properties.update(transition_info)
+
+        feature = {
+            'type': 'Feature',
+            'geometry': {
+                'type': 'Polygon',
+                'coordinates': poly['coordinates']
+            },
+            'properties': properties
+        }
+        features.append(feature)
+
+    geojson = {
+        'type': 'FeatureCollection',
+        'crs': {
+            'type': 'name',
+            'properties': {
+                'name': 'urn:ogc:def:crs:EPSG::4326'
+            }
+        },
+        'metadata': {
+            'image_dimensions': {'height': H, 'width': W},
+            'total_change_regions': len(features),
+            'total_change_pixels': int(np.sum(change_mask)),
+            'total_pixels': int(change_mask.size),
+            'change_ratio': round(float(np.sum(change_mask) / change_mask.size), 6),
+        },
+        'features': features
+    }
+
+    return geojson
+
+
+def compute_kappa_coefficient(mask1: np.ndarray, mask2: np.ndarray) -> float:
+    flat1 = mask1.ravel().astype(np.int32)
+    flat2 = mask2.ravel().astype(np.int32)
+    return float(cohen_kappa_score(flat1, flat2))
+
+
+def compute_overlap_heatmap(masks: List[np.ndarray]) -> np.ndarray:
+    if not masks:
+        raise ValueError("At least one mask required")
+
+    H, W = masks[0].shape
+    for m in masks:
+        if m.shape != (H, W):
+            raise ValueError("All masks must have the same shape")
+
+    overlap = np.zeros((H, W), dtype=np.int32)
+    for m in masks:
+        overlap += m.astype(np.int32)
+
+    return overlap
+
+
+def run_multi_algorithm_comparison(img_a: np.ndarray,
+                                    img_b: np.ndarray,
+                                    algorithms: List[str],
+                                    params: Optional[Dict] = None,
+                                    chunk_size: int = 500,
+                                    progress_callback=None) -> Dict:
+    if params is None:
+        params = {}
+
+    results = {}
+    total_algos = len(algorithms)
+
+    for idx, algo in enumerate(algorithms):
+        if progress_callback:
+            progress_callback(idx / total_algos, f"运行 {algo} 算法 ({idx+1}/{total_algos})...")
+
+        if algo == 'SAD':
+            threshold = params.get('SAD', {}).get('threshold', 0.1)
+            mask, intensity, stats = sad_change_detection(
+                img_a, img_b, threshold=threshold,
+                chunk_size=chunk_size
+            )
+        elif algo == 'CVA':
+            algo_params = params.get('CVA', {})
+            mask, intensity, stats = cva_change_detection(
+                img_a, img_b,
+                threshold=algo_params.get('threshold'),
+                threshold_method=algo_params.get('threshold_method', 'percentile'),
+                percentile=algo_params.get('percentile', 95.0),
+                chunk_size=chunk_size
+            )
+        elif algo == 'PCA':
+            variance_ratio = params.get('PCA', {}).get('variance_ratio', 0.95)
+            mask, intensity, stats = pca_change_detection(
+                img_a, img_b, variance_ratio=variance_ratio,
+                chunk_size=chunk_size
+            )
+        else:
+            continue
+
+        results[algo] = {
+            'mask': mask,
+            'intensity': intensity,
+            'stats': stats
+        }
+
+    if progress_callback:
+        progress_callback(0.8, "计算一致性指标...")
+
+    comparison = {
+        'algorithm_results': results,
+        'area_ratios': {},
+        'kappa_matrix': {},
+    }
+
+    for algo, res in results.items():
+        comparison['area_ratios'][algo] = res['stats']['change_ratio']
+
+    algo_list = list(results.keys())
+    for i in range(len(algo_list)):
+        for j in range(i + 1, len(algo_list)):
+            a1, a2 = algo_list[i], algo_list[j]
+            kappa = compute_kappa_coefficient(results[a1]['mask'], results[a2]['mask'])
+            comparison['kappa_matrix'][(a1, a2)] = kappa
+
+    if progress_callback:
+        progress_callback(0.9, "生成重叠度热力图...")
+
+    masks_list = [results[a]['mask'] for a in algo_list]
+    comparison['overlap_heatmap'] = compute_overlap_heatmap(masks_list)
+
+    if progress_callback:
+        progress_callback(1.0, "多算法对比完成")
+
+    return comparison
+
+
+def compute_ndvi_timeseries(images: List[np.ndarray],
+                            wavelengths: Optional[List[np.ndarray]] = None) -> List[float]:
+    from .visualization import compute_ndvi as _compute_ndvi
+    ndvi_values = []
+    for i, img in enumerate(images):
+        wl = wavelengths[i] if wavelengths and i < len(wavelengths) else None
+        ndvi_map = _compute_ndvi(img, wl)
+        ndvi_values.append(float(np.mean(ndvi_map)))
+    return ndvi_values
+
+
+def compute_ndvi_pixel_timeseries(images: List[np.ndarray],
+                                   x: int, y: int,
+                                   wavelengths: Optional[List[np.ndarray]] = None) -> List[float]:
+    from .visualization import compute_ndvi as _compute_ndvi
+    ndvi_values = []
+    for i, img in enumerate(images):
+        H, W = img.shape[:2]
+        if 0 <= y < H and 0 <= x < W:
+            pixel_data = img[y:y+1, x:x+1, :]
+            wl = wavelengths[i] if wavelengths and i < len(wavelengths) else None
+            ndvi_map = _compute_ndvi(pixel_data, wl)
+            ndvi_values.append(float(ndvi_map[0, 0]))
+        else:
+            ndvi_values.append(0.0)
+    return ndvi_values
+
+
+def prepare_chord_diagram_data(transition_matrix: np.ndarray,
+                                classes: List[int],
+                                class_names: Dict[int, str]) -> Dict:
+    n = len(classes)
+    labels = [class_names.get(c, f'Class {c}') for c in classes]
+
+    matrix = transition_matrix.astype(np.float64).tolist()
+
+    total = float(np.sum(transition_matrix))
+
+    details = []
+    for i in range(n):
+        for j in range(n):
+            if i != j and transition_matrix[i, j] > 0:
+                count = int(transition_matrix[i, j])
+                details.append({
+                    'source_idx': i,
+                    'target_idx': j,
+                    'source': labels[i],
+                    'target': labels[j],
+                    'pixels': count,
+                    'percentage': round(count / total * 100, 4) if total > 0 else 0.0,
+                })
+
+    return {
+        'labels': labels,
+        'matrix': matrix,
+        'details': details,
+        'n_classes': n,
+        'total_pixels': int(total),
+    }

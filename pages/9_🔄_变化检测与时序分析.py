@@ -268,7 +268,8 @@ if images_aligned and st.session_state.change_aligned_a is not None:
                     change_mask, intensity, stats = sad_change_detection(
                         img_a, img_b,
                         threshold=sad_threshold,
-                        chunk_size=500
+                        chunk_size=500,
+                        progress_callback=progress_cb
                     )
                 elif method_key == 'CVA':
                     if cva_threshold_method == "手动设置":
@@ -276,7 +277,8 @@ if images_aligned and st.session_state.change_aligned_a is not None:
                             img_a, img_b,
                             threshold=cva_threshold,
                             threshold_method='manual',
-                            chunk_size=500
+                            chunk_size=500,
+                            progress_callback=progress_cb
                         )
                     elif cva_threshold_method == "百分位数法":
                         change_mask, intensity, stats = cva_change_detection(
@@ -284,29 +286,29 @@ if images_aligned and st.session_state.change_aligned_a is not None:
                             threshold=None,
                             threshold_method='percentile',
                             percentile=100 - cva_percentile,
-                            chunk_size=500
+                            chunk_size=500,
+                            progress_callback=progress_cb
                         )
                     else:
                         change_mask, intensity, stats = cva_change_detection(
                             img_a, img_b,
                             threshold=None,
                             threshold_method='auto',
-                            chunk_size=500
+                            chunk_size=500,
+                            progress_callback=progress_cb
                         )
                 else:
                     change_mask, intensity, stats = pca_change_detection(
                         img_a, img_b,
                         variance_ratio=pca_variance_ratio,
-                        chunk_size=500
+                        chunk_size=500,
+                        progress_callback=progress_cb
                     )
 
                 st.session_state.change_method = method_key
                 st.session_state.change_mask = change_mask
                 st.session_state.change_intensity = intensity
                 st.session_state.change_stats = stats
-
-                progress_bar.progress(1.0)
-                status_text.text("变化检测完成")
 
                 st.success("✅ 变化检测完成")
 

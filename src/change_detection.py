@@ -47,12 +47,15 @@ def align_images(img_a: np.ndarray, img_b: np.ndarray,
 
 
 def compute_sad(img_a: np.ndarray, img_b: np.ndarray,
-               chunk_size: int = 1000) -> np.ndarray:
+               chunk_size: int = 1000,
+               progress_callback=None) -> np.ndarray:
     if img_a.shape != img_b.shape:
         raise ValueError("Images must have the same shape")
 
     H, W, B = img_a.shape
     sad_map = np.zeros((H, W), dtype=np.float32)
+    total_chunks = (H + chunk_size - 1) // chunk_size
+    chunk_idx = 0
 
     for chunk_a, start, end in chunk_generator(img_a, chunk_size=chunk_size, axis=0):
         chunk_b = img_b[start:end]
@@ -66,17 +69,34 @@ def compute_sad(img_a: np.ndarray, img_b: np.ndarray,
         cos_angle = dot / (norm_a * norm_b + 1e-10)
         cos_angle = np.clip(cos_angle, -1.0, 1.0)
         angle = np.arccos(cos_angle)
+        angle = np.nan_to_num(angle, nan=0.0, posinf=0.0, neginf=0.0)
 
         sad_map[start:end] = angle.astype(np.float32)
+
+        chunk_idx += 1
+        if progress_callback:
+            progress = (chunk_idx / total_chunks) * 0.8
+            progress_callback(progress, f"计算SAD: 行 {start}-{end}/{H}")
 
     return sad_map
 
 
 def sad_change_detection(img_a: np.ndarray, img_b: np.ndarray,
                         threshold: float,
-                        chunk_size: int = 1000) -> Tuple[np.ndarray, np.ndarray, Dict]:
-    sad_map = compute_sad(img_a, img_b, chunk_size=chunk_size)
+                        chunk_size: int = 1000,
+                        progress_callback=None) -> Tuple[np.ndarray, np.ndarray, Dict]:
+    if progress_callback:
+        progress_callback(0.0, "开始计算SAD...")
+
+    sad_map = compute_sad(img_a, img_b, chunk_size=chunk_size, progress_callback=progress_callback)
+
+    if progress_callback:
+        progress_callback(0.85, "生成变化掩码...")
+
     change_mask = sad_map > threshold
+
+    if progress_callback:
+        progress_callback(0.95, "计算统计信息...")
 
     stats = {
         'method': 'SAD',
@@ -90,22 +110,34 @@ def sad_change_detection(img_a: np.ndarray, img_b: np.ndarray,
         'change_ratio': float(np.sum(change_mask) / change_mask.size),
     }
 
+    if progress_callback:
+        progress_callback(1.0, "SAD变化检测完成")
+
     return change_mask, sad_map, stats
 
 
 def compute_cva(img_a: np.ndarray, img_b: np.ndarray,
-                chunk_size: int = 1000) -> np.ndarray:
+                chunk_size: int = 1000,
+                progress_callback=None) -> np.ndarray:
     if img_a.shape != img_b.shape:
         raise ValueError("Images must have the same shape")
 
     H, W, B = img_a.shape
     magnitude = np.zeros((H, W), dtype=np.float32)
+    total_chunks = (H + chunk_size - 1) // chunk_size
+    chunk_idx = 0
 
     for chunk_a, start, end in chunk_generator(img_a, chunk_size=chunk_size, axis=0):
         chunk_b = img_b[start:end]
         diff = chunk_a.astype(np.float64) - chunk_b.astype(np.float64)
         mag = np.linalg.norm(diff, axis=-1)
+        mag = np.nan_to_num(mag, nan=0.0, posinf=0.0, neginf=0.0)
         magnitude[start:end] = mag.astype(np.float32)
+
+        chunk_idx += 1
+        if progress_callback:
+            progress = (chunk_idx / total_chunks) * 0.8
+            progress_callback(progress, f"计算CVA: 行 {start}-{end}/{H}")
 
     return magnitude
 
@@ -114,15 +146,28 @@ def cva_change_detection(img_a: np.ndarray, img_b: np.ndarray,
                          threshold: Optional[float] = None,
                          threshold_method: str = 'manual',
                          percentile: float = 95.0,
-                         chunk_size: int = 1000) -> Tuple[np.ndarray, np.ndarray, Dict]:
-    magnitude = compute_cva(img_a, img_b, chunk_size=chunk_size)
+                         chunk_size: int = 1000,
+                         progress_callback=None) -> Tuple[np.ndarray, np.ndarray, Dict]:
+    if progress_callback:
+        progress_callback(0.0, "开始计算CVA...")
+
+    magnitude = compute_cva(img_a, img_b, chunk_size=chunk_size, progress_callback=progress_callback)
+
+    if progress_callback:
+        progress_callback(0.82, "确定阈值...")
 
     if threshold_method == 'percentile':
         threshold = float(np.percentile(magnitude, percentile))
     elif threshold is None:
         threshold = float(np.mean(magnitude) + 2 * np.std(magnitude))
 
+    if progress_callback:
+        progress_callback(0.88, "生成变化掩码...")
+
     change_mask = magnitude > threshold
+
+    if progress_callback:
+        progress_callback(0.95, "计算统计信息...")
 
     stats = {
         'method': 'CVA',
@@ -136,6 +181,9 @@ def cva_change_detection(img_a: np.ndarray, img_b: np.ndarray,
         'total_pixels': int(change_mask.size),
         'change_ratio': float(np.sum(change_mask) / change_mask.size),
     }
+
+    if progress_callback:
+        progress_callback(1.0, "CVA变化检测完成")
 
     return change_mask, magnitude, stats
 
@@ -180,30 +228,57 @@ def otsu_threshold(image: np.ndarray,
 
 def pca_change_detection(img_a: np.ndarray, img_b: np.ndarray,
                         variance_ratio: float = 0.95,
-                        chunk_size: int = 1000) -> Tuple[np.ndarray, np.ndarray, Dict]:
+                        chunk_size: int = 1000,
+                        progress_callback=None) -> Tuple[np.ndarray, np.ndarray, Dict]:
     if img_a.shape != img_b.shape:
         raise ValueError("Images must have the same shape")
 
     H, W, B = img_a.shape
 
+    if progress_callback:
+        progress_callback(0.0, "计算差值影像...")
+
     diff = (img_a.astype(np.float64) - img_b.astype(np.float64))
     diff_flat = reshape_for_classifier(diff)
 
+    if progress_callback:
+        progress_callback(0.15, "执行PCA分析...")
+
     pca = PCA()
     pca.fit(diff_flat)
+
+    if progress_callback:
+        progress_callback(0.35, "确定主成分数...")
 
     cumulative_variance = np.cumsum(pca.explained_variance_ratio_)
     n_components = np.searchsorted(cumulative_variance, variance_ratio) + 1
     n_components = min(n_components, B)
 
+    if progress_callback:
+        progress_callback(0.5, f"使用 {n_components} 个主成分变换...")
+
     pca_n = PCA(n_components=n_components)
     pca_features = pca_n.fit_transform(diff_flat)
 
+    if progress_callback:
+        progress_callback(0.7, "计算变化强度...")
+
     magnitude = np.linalg.norm(pca_features, axis=1)
     magnitude = magnitude.reshape(H, W).astype(np.float32)
+    magnitude = np.nan_to_num(magnitude, nan=0.0, posinf=0.0, neginf=0.0)
+
+    if progress_callback:
+        progress_callback(0.8, "OTSU自动确定阈值...")
 
     threshold = otsu_threshold(magnitude)
+
+    if progress_callback:
+        progress_callback(0.88, "生成变化掩码...")
+
     change_mask = magnitude > threshold
+
+    if progress_callback:
+        progress_callback(0.95, "计算统计信息...")
 
     stats = {
         'method': 'PCA',
@@ -220,6 +295,9 @@ def pca_change_detection(img_a: np.ndarray, img_b: np.ndarray,
         'total_pixels': int(change_mask.size),
         'change_ratio': float(np.sum(change_mask) / change_mask.size),
     }
+
+    if progress_callback:
+        progress_callback(1.0, "PCA变化检测完成")
 
     return change_mask, magnitude, stats
 
@@ -336,19 +414,33 @@ def compute_spectral_difference(spectrum_a: np.ndarray,
     abs_diff = np.abs(diff)
     max_diff_idx = int(np.argmax(abs_diff))
 
-    sad = np.arccos(
-        np.dot(spectrum_a, spectrum_b) /
-        (np.linalg.norm(spectrum_a) * np.linalg.norm(spectrum_b) + 1e-10)
-    )
-    sad = np.clip(sad, 0, np.pi)
+    norm_a = np.linalg.norm(spectrum_a)
+    norm_b = np.linalg.norm(spectrum_b)
+
+    if norm_a < 1e-10 or norm_b < 1e-10:
+        sad = 0.0
+    else:
+        cos_angle = np.dot(spectrum_a, spectrum_b) / (norm_a * norm_b + 1e-10)
+        cos_angle = np.clip(cos_angle, -1.0, 1.0)
+        sad = np.arccos(cos_angle)
+        if np.isnan(sad) or np.isinf(sad):
+            sad = 0.0
+        if sad < 1e-5:
+            sad = 0.0
+
+    sad = float(np.clip(sad, 0, np.pi))
+
+    euclidean = float(np.linalg.norm(diff))
+    if np.isnan(euclidean) or np.isinf(euclidean):
+        euclidean = 0.0
 
     stats = {
         'max_diff_band_index': max_diff_idx,
         'max_diff_value': float(abs_diff[max_diff_idx]),
         'mean_diff': float(np.mean(abs_diff)),
         'std_diff': float(np.std(abs_diff)),
-        'sad': float(sad),
-        'euclidean_distance': float(np.linalg.norm(diff)),
+        'sad': sad,
+        'euclidean_distance': euclidean,
         'difference': diff,
         'absolute_difference': abs_diff,
     }

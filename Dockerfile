@@ -6,12 +6,13 @@ ENV PYTHONUNBUFFERED=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
     libxrender-dev \
     libgomp1 \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

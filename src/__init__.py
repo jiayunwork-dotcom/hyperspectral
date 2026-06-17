@@ -7,6 +7,7 @@ from . import evaluation
 from . import visualization
 from . import batch_processing
 from . import utils
+from . import change_detection
 
 __all__ = [
     'data_io',
@@ -17,5 +18,6 @@ __all__ = [
     'evaluation',
     'visualization',
     'batch_processing',
-    'utils'
+    'utils',
+    'change_detection'
 ]
